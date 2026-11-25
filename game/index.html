@@ -124,6 +124,8 @@
   let resultTimer = 0;
   let pressing = false;
   let t = 0;
+  let celebrate = null; // legendary catch animation
+  let particles = [];
 
   const waterY = () => H * 0.52;
   const rodTip = () => ({ x: W * 0.18, y: waterY() - 120 });
@@ -194,10 +196,137 @@
       save.caught[f.name] = (save.caught[f.name] || 0) + 1;
       persist(); updateCoins();
       msg(`Caught a <b style="color:${RARITIES[f.rarity].color}">${f.rarity} ${f.name}</b>! +${f.price} 🪙`);
+      if (f.rarity === 'Legendary') { startCelebration(f); return; }
     } else {
       msg('The fish escaped...');
     }
     reset(2.2);
+  }
+
+  // ---------- Legendary celebration ----------
+  const CELEBRATE_TIME = 4.2;
+  function startCelebration(f) {
+    celebrate = { t: 0, fish: f, sx: bobber.x, sy: waterY() + 8 };
+    particles = [];
+    // big splash where the fish breaks the surface
+    for (let i = 0; i < 40; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.6, sp = 150 + Math.random() * 350;
+      particles.push({ x: celebrate.sx, y: celebrate.sy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 1 + Math.random() * 0.6, max: 1.6, size: 2 + Math.random() * 4, color: 'rgba(200,240,255,' , g: 700 });
+    }
+    reset(CELEBRATE_TIME);
+  }
+
+  function updateCelebration(dt) {
+    if (!celebrate) return;
+    celebrate.t += dt;
+    const c = celebrate;
+    // golden sparkles around the fish once it is in the air
+    if (c.t > 0.5 && c.t < CELEBRATE_TIME - 0.6) {
+      const p = fishPos();
+      for (let i = 0; i < 3; i++) {
+        const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 160;
+        particles.push({ x: p.x, y: p.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30,
+          life: 0.8 + Math.random() * 0.7, max: 1.5, size: 1.5 + Math.random() * 3, color: 'rgba(255,215,90,', g: 60, star: true });
+      }
+    }
+    for (const p of particles) { p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    particles = particles.filter(p => p.life > 0);
+    if (c.t >= CELEBRATE_TIME) { celebrate = null; particles = []; }
+  }
+
+  // fish leaps from the bobber to the middle of the sky, then hovers
+  function fishPos() {
+    const c = celebrate, cx = W / 2, cy = H * 0.34;
+    const k = Math.min(1, c.t / 1.3), e = 1 - Math.pow(1 - k, 3);
+    const x = c.sx + (cx - c.sx) * e;
+    const y = c.sy + (cy - c.sy) * e - Math.sin(k * Math.PI) * H * 0.15;
+    return { x, y: y + (k >= 1 ? Math.sin((c.t - 1.3) * 3) * 8 : 0), k };
+  }
+
+  function drawStar(x, y, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const rr = i % 2 ? r * 0.35 : r, a = i * Math.PI / 4;
+      ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+
+  function drawBigFish(x, y, scale, rot) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(scale, scale);
+    const g = ctx.createLinearGradient(0, -30, 0, 30);
+    g.addColorStop(0, '#fff3b0'); g.addColorStop(0.5, '#ffcc4d'); g.addColorStop(1, '#c98a12');
+    ctx.fillStyle = g; ctx.strokeStyle = '#7a4e00'; ctx.lineWidth = 2;
+    // tail
+    ctx.beginPath(); ctx.moveTo(-50, 0); ctx.lineTo(-85, -30); ctx.quadraticCurveTo(-72, 0, -85, 30); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // dorsal fin
+    ctx.beginPath(); ctx.moveTo(-20, -24); ctx.quadraticCurveTo(0, -55, 25, -24); ctx.closePath(); ctx.fill(); ctx.stroke();
+    // body
+    ctx.beginPath(); ctx.ellipse(0, 0, 60, 30, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // scales shimmer
+    ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1.5;
+    for (let i = -2; i <= 1; i++) { ctx.beginPath(); ctx.arc(i * 16, 0, 12, -1, 1); ctx.stroke(); }
+    // eye
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(38, -8, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(40, -8, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCelebration() {
+    const c = celebrate, T = c.t;
+    const fade = Math.min(1, (CELEBRATE_TIME - T) / 0.5);
+    // darken the scene
+    ctx.fillStyle = `rgba(20,10,30,${0.45 * Math.min(1, T / 0.4) * fade})`;
+    ctx.fillRect(0, 0, W, H);
+    const p = fishPos();
+    ctx.save(); ctx.globalAlpha = fade;
+    // rotating golden rays behind the fish
+    if (p.k > 0.6) {
+      const ra = Math.min(1, (T - 0.8) / 0.5);
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(T * 0.6);
+      const R = Math.max(W, H);
+      for (let i = 0; i < 12; i++) {
+        ctx.rotate(Math.PI / 6);
+        ctx.fillStyle = `rgba(255,210,80,${0.18 * ra})`;
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(R, -R * 0.12); ctx.lineTo(R, R * 0.12); ctx.closePath(); ctx.fill();
+      }
+      const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 140);
+      glow.addColorStop(0, `rgba(255,240,180,${0.8 * ra})`); glow.addColorStop(1, 'rgba(255,200,80,0)');
+      ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, 140, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    // particles
+    for (const q of particles) {
+      ctx.fillStyle = q.color + Math.max(0, q.life / q.max) + ')';
+      if (q.star) drawStar(q.x, q.y, q.size * 1.6);
+      else { ctx.beginPath(); ctx.arc(q.x, q.y, q.size, 0, Math.PI * 2); ctx.fill(); }
+    }
+    // the fish: grows and does a full flip during the leap
+    const size = Math.min(W, H) / 320;
+    const scale = (0.4 + 0.6 * p.k) * size * (1 + (p.k >= 1 ? Math.sin(T * 6) * 0.03 : 0));
+    drawBigFish(p.x, p.y, scale, p.k < 1 ? p.k * Math.PI * 2 : Math.sin(T * 2) * 0.08);
+    // banner
+    if (T > 1.0) {
+      const b = Math.min(1, (T - 1.0) / 0.35);
+      const pop = b < 1 ? 0.3 + 0.7 * b + 0.25 * Math.sin(b * Math.PI) : 1 + Math.sin(T * 4) * 0.02;
+      const fs = Math.min(W / 9, 64);
+      ctx.save(); ctx.translate(W / 2, H * 0.62); ctx.scale(pop, pop);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `900 ${fs}px system-ui, sans-serif`;
+      const tg = ctx.createLinearGradient(0, -fs / 2, 0, fs / 2);
+      tg.addColorStop(0, '#fff6c2'); tg.addColorStop(0.5, '#ffcc4d'); tg.addColorStop(1, '#e08a00');
+      ctx.lineWidth = 6; ctx.strokeStyle = '#4a2400'; ctx.strokeText('LEGENDARY!', 0, 0);
+      ctx.fillStyle = tg; ctx.fillText('LEGENDARY!', 0, 0);
+      ctx.font = `700 ${fs * 0.38}px system-ui, sans-serif`;
+      ctx.lineWidth = 4; ctx.strokeText(c.fish.name, 0, fs * 0.75);
+      ctx.fillStyle = '#fff'; ctx.fillText(c.fish.name, 0, fs * 0.75);
+      ctx.restore();
+    }
+    ctx.restore();
+    // white flash at the moment of the catch
+    if (T < 0.35) { ctx.fillStyle = `rgba(255,255,255,${0.85 * (1 - T / 0.35)})`; ctx.fillRect(0, 0, W, H); }
   }
 
   function reset(delay) { state = 'result'; resultTimer = delay; reel = null; }
@@ -253,6 +382,12 @@
   // ---------- Draw ----------
   function draw() {
     const wy = waterY();
+    // screen shake for the first moments of a legendary catch
+    ctx.save();
+    if (celebrate && celebrate.t < 0.8) {
+      const m = 10 * (1 - celebrate.t / 0.8);
+      ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+    }
     // sky
     let g = ctx.createLinearGradient(0, 0, 0, wy);
     g.addColorStop(0, '#ffb3c7'); g.addColorStop(1, '#ffe3b0');
@@ -319,6 +454,8 @@
       ctx.strokeStyle = '#fff'; ctx.strokeRect(mx, my, mw, 14);
     }
     if (state === 'reeling') drawReel();
+    ctx.restore();
+    if (celebrate) drawCelebration();
   }
 
   function drawReel() {
@@ -388,7 +525,7 @@
   let last = performance.now();
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
-    update(dt); draw();
+    update(dt); updateCelebration(dt); draw();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
