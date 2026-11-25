@@ -21,7 +21,8 @@
     font-size: 14px; pointer-events: auto; }
   .btns { display: flex; gap: 8px; pointer-events: auto; }
   button { font: inherit; color: var(--ui-fg); background: var(--ui-bg); border: 1px solid rgba(255,255,255,.15);
-    border-radius: 999px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 14px; }
+    border-radius: 999px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 14px;
+    white-space: nowrap; flex-shrink: 0; }
   button:hover { border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   #msg { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ui-bg);
@@ -37,11 +38,16 @@
     padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 14px; }
   .row small { opacity: .7; display: block; }
   .close { margin-top: 12px; width: 100%; }
-  #freezeBtn { position: fixed; right: max(16px, env(safe-area-inset-right, 0px));
+  #powerBtn { position: fixed; right: max(16px, env(safe-area-inset-right, 0px));
     bottom: calc(84px + env(safe-area-inset-bottom, 0px)); padding: 14px 20px; font-size: 16px;
-    background: linear-gradient(#bfefff, #4fb3e8); color: #062a44; border: 2px solid #e8fbff;
+    border: 2px solid #fff; }
+  #powerBtn.freeze { background: linear-gradient(#bfefff, #4fb3e8); color: #062a44; border-color: #e8fbff;
     box-shadow: 0 0 16px rgba(120, 220, 255, .7); }
-  #freezeBtn:disabled { box-shadow: none; }
+  #powerBtn.lightning { background: linear-gradient(#fff27a, #f5a700); color: #3a2400; border-color: #fff9c4;
+    box-shadow: 0 0 18px rgba(255, 220, 60, .8); }
+  #powerBtn.whirlpool { background: linear-gradient(#8ff5e6, #168a9c); color: #032c33; border-color: #d4fffa;
+    box-shadow: 0 0 18px rgba(80, 230, 210, .7); }
+  #powerBtn:disabled { box-shadow: none; }
 </style>
 </head>
 <body>
@@ -54,7 +60,7 @@
     <button id="bookBtn">Journal</button>
   </div>
 </div>
-<button id="freezeBtn" hidden>❄ Freeze</button>
+<button id="powerBtn" hidden></button>
 <div id="msg">Hold to charge your cast, release to throw.</div>
 
 <div class="panel" id="shop"><div class="card">
@@ -99,6 +105,8 @@
     { name: 'Aurora Rod',  cost: 2000, bar: 0.38, luck: 2.6, speed: 1.5 },
     // Special rod: big rare-fish luck plus the Freeze power while reeling
     { name: 'Frostbloom Rod', cost: 0, bar: 0.36, luck: 4, speed: 1.4, power: 'freeze' },
+    { name: 'Thunder Rod',    cost: 1500, bar: 0.32, luck: 3, speed: 1.5, power: 'lightning' },
+    { name: 'Maelstrom Rod',  cost: 2500, bar: 0.34, luck: 3.2, speed: 1.4, power: 'whirlpool' },
   ];
 
   // ---------- Save ----------
@@ -138,8 +146,12 @@
   let resultTimer = 0;
   let pressing = false;
   let t = 0;
-  let celebrate = null; // legendary catch animation
+  let celebrate = null; // Legendary / Unique catch animation
   let particles = [];
+  let ability = null;     // active rod power animation { kind, t, dur }
+  let fxParticles = [];   // sparks, droplets, etc. from rod powers
+  let shake = { t: 0, dur: 1, mag: 0 };
+  const shakeScreen = (dur, mag) => { if (mag >= shake.mag * shake.t / shake.dur) shake = { t: dur, dur, mag }; };
 
   const waterY = () => H * 0.52;
   const rodTip = () => ({ x: W * 0.18, y: waterY() - 120 });
@@ -199,9 +211,13 @@
   function startReel() {
     state = 'reeling';
     reel = { fish: 0.5, fishV: 0, fishTarget: 0.5, zone: 0.5, zoneV: 0,
-             size: rod().bar, progress: 0.3, retarget: 0, frozen: 0, freezeUsed: false };
+             size: rod().bar, progress: 0.3, retarget: 0, frozen: 0, stun: 0, pull: 0, powerUsed: false };
     msg('Hold to lift the bar, keep the fish inside it!');
-    if (rod().power === 'freeze') { $('freezeBtn').hidden = false; $('freezeBtn').disabled = false; }
+    const pw = POWERS[rod().power];
+    if (pw) {
+      const b = $('powerBtn');
+      b.className = rod().power; b.textContent = pw.label; b.hidden = false; b.disabled = false;
+    }
   }
 
   function finishReel(success) {
@@ -211,7 +227,7 @@
       save.caught[f.name] = (save.caught[f.name] || 0) + 1;
       persist(); updateCoins();
       msg(`Caught a <b style="color:${RARITIES[f.rarity].color}">${f.rarity} ${f.name}</b>! +${f.price} 🪙`);
-      if (f.rarity === 'Legendary') { startCelebration(f); return; }
+      if (f.rarity === 'Legendary' || f.rarity === 'Unique') { startCelebration(f); return; }
     } else {
       msg('The fish escaped...');
     }
@@ -220,24 +236,30 @@
 
   // ---------- Legendary celebration ----------
   const CELEBRATE_TIME = 4.2;
+  const UNIQUE_TIME = 4.4;
   function startCelebration(f) {
-    celebrate = { t: 0, fish: f, sx: bobber.x, sy: waterY() + 8 };
+    const dragon = f.rarity === 'Unique';
+    celebrate = { t: 0, fish: f, sx: bobber.x, sy: waterY() + 8, kind: f.rarity,
+                  dur: dragon ? UNIQUE_TIME : CELEBRATE_TIME };
     particles = [];
-    // big splash where the fish breaks the surface
-    for (let i = 0; i < 40; i++) {
+    // big splash where the fish breaks the surface (fiery for the dragon)
+    for (let i = 0; i < (dragon ? 60 : 40); i++) {
       const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.6, sp = 150 + Math.random() * 350;
       particles.push({ x: celebrate.sx, y: celebrate.sy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-        life: 1 + Math.random() * 0.6, max: 1.6, size: 2 + Math.random() * 4, color: 'rgba(200,240,255,' , g: 700 });
+        life: 1 + Math.random() * 0.6, max: 1.6, size: 2 + Math.random() * 4, g: 700,
+        color: dragon ? (i % 2 ? 'rgba(255,170,60,' : 'rgba(255,90,30,') : 'rgba(200,240,255,', add: dragon });
     }
-    reset(CELEBRATE_TIME);
+    shakeScreen(dragon ? 1.0 : 0.8, dragon ? 14 : 10);
+    reset(celebrate.dur);
   }
 
   function updateCelebration(dt) {
     if (!celebrate) return;
     celebrate.t += dt;
     const c = celebrate;
+    if (c.kind === 'Unique') updateDragon(c, dt);
     // golden sparkles around the fish once it is in the air
-    if (c.t > 0.5 && c.t < CELEBRATE_TIME - 0.6) {
+    else if (c.t > 0.5 && c.t < CELEBRATE_TIME - 0.6) {
       const p = fishPos();
       for (let i = 0; i < 3; i++) {
         const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 160;
@@ -245,9 +267,12 @@
           life: 0.8 + Math.random() * 0.7, max: 1.5, size: 1.5 + Math.random() * 3, color: 'rgba(255,215,90,', g: 60, star: true });
       }
     }
-    for (const p of particles) { p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    for (const p of particles) {
+      p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+      if (p.drag) { p.vx *= Math.pow(p.drag, dt); p.vy *= Math.pow(p.drag, dt); }
+    }
     particles = particles.filter(p => p.life > 0);
-    if (c.t >= CELEBRATE_TIME) { celebrate = null; particles = []; }
+    if (c.t >= c.dur) { celebrate = null; particles = []; }
   }
 
   // fish leaps from the bobber to the middle of the sky, then hovers
@@ -289,7 +314,167 @@
     ctx.restore();
   }
 
+  // ---------- Unique (Amber Dragon) celebration ----------
+  // A serpent dragon bursts out of the water, circles the sky breathing fire.
+  function dragonPos(T) {
+    const c = celebrate, cx = W / 2, cy = H * 0.33, R = Math.min(W, H) * 0.3;
+    if (T < 1) {
+      const k = Math.max(0, T), e = 1 - Math.pow(1 - k, 2);
+      return { x: c.sx + (cx + R - c.sx) * e, y: c.sy + (cy - c.sy) * e - Math.sin(k * Math.PI) * H * 0.12 };
+    }
+    const a = (T - 1) * 2.4;
+    return { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R * 0.55 };
+  }
+  const DRAGON_SEGS = 30, SEG_GAP = 0.035;
+
+  function updateDragon(c, dt) {
+    const end = c.dur - 0.7;
+    // fire breath from the head
+    if (c.t > 1.3 && c.t < end) {
+      const h = dragonPos(c.t), b = dragonPos(c.t - 0.02);
+      const ang = Math.atan2(h.y - b.y, h.x - b.x);
+      for (let i = 0; i < 3; i++) {
+        const a = ang + (Math.random() - 0.5) * 0.5, sp = 220 + Math.random() * 200;
+        particles.push({ x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: -60, drag: 0.15,
+          life: 0.5 + Math.random() * 0.3, max: 0.8, size: 4 + Math.random() * 4, grow: 3, add: true,
+          color: ['rgba(255,200,80,', 'rgba(255,120,20,', 'rgba(230,50,10,'][i % 3] });
+      }
+    }
+    // embers drifting up from the water
+    if (c.t < end) for (let i = 0; i < 2; i++) {
+      particles.push({ x: Math.random() * W, y: waterY() + Math.random() * 40, vx: (Math.random() - 0.5) * 30,
+        vy: -60 - Math.random() * 80, g: 0, life: 1.5 + Math.random(), max: 2.5, size: 1.5 + Math.random() * 2,
+        color: 'rgba(255,170,60,', add: true });
+    }
+  }
+
+  function drawDragon(T) {
+    const size = Math.min(W, H) / 400;
+    const pts = [];
+    for (let i = 0; i <= DRAGON_SEGS; i++) {
+      const ti = T - i * SEG_GAP;
+      if (ti < 0) break;
+      pts.push(dragonPos(ti));
+    }
+    if (pts.length < 2) return;
+    const width = i => size * (16 * (1 - i / (DRAGON_SEGS + 6)) + 3);
+    // body from tail to head
+    for (let i = pts.length - 1; i >= 1; i--) {
+      const p = pts[i], q = pts[i - 1];
+      const w = width(i);
+      ctx.fillStyle = i % 2 ? '#e8590c' : '#f76707';
+      ctx.beginPath(); ctx.arc(p.x, p.y, w, 0, Math.PI * 2); ctx.fill();
+      // belly highlight
+      ctx.fillStyle = 'rgba(255,220,140,.55)';
+      ctx.beginPath(); ctx.arc(p.x, p.y + w * 0.3, w * 0.5, 0, Math.PI * 2); ctx.fill();
+      // back spikes
+      if (i % 3 === 0) {
+        const ang = Math.atan2(q.y - p.y, q.x - p.x), nx = Math.cos(ang - Math.PI / 2), ny = Math.sin(ang - Math.PI / 2);
+        ctx.fillStyle = '#7c2d12';
+        ctx.beginPath();
+        ctx.moveTo(p.x + nx * w * 0.6 - Math.cos(ang) * w * 0.5, p.y + ny * w * 0.6 - Math.sin(ang) * w * 0.5);
+        ctx.lineTo(p.x + nx * w * 1.7, p.y + ny * w * 1.7);
+        ctx.lineTo(p.x + nx * w * 0.6 + Math.cos(ang) * w * 0.5, p.y + ny * w * 0.6 + Math.sin(ang) * w * 0.5);
+        ctx.fill();
+      }
+      // wings near the front, flapping
+      if (i === 6) {
+        const ang = Math.atan2(q.y - p.y, q.x - p.x), flap = Math.sin(T * 10) * 0.6;
+        for (const side of [-1, 1]) {
+          const a = ang + side * (Math.PI / 2 + flap * side);
+          ctx.fillStyle = 'rgba(255,140,40,.85)'; ctx.strokeStyle = '#7c2d12'; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.moveTo(p.x, p.y);
+          ctx.quadraticCurveTo(p.x + Math.cos(a) * 40 * size - Math.cos(ang) * 30 * size,
+            p.y + Math.sin(a) * 40 * size - Math.sin(ang) * 30 * size,
+            p.x + Math.cos(a) * 55 * size, p.y + Math.sin(a) * 55 * size);
+          ctx.lineTo(p.x - Math.cos(ang) * 22 * size, p.y - Math.sin(ang) * 22 * size);
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      }
+    }
+    // head
+    const h = pts[0], n = pts[1], ang = Math.atan2(h.y - n.y, h.x - n.x);
+    ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(ang); ctx.scale(size, size);
+    ctx.fillStyle = '#d9480f';
+    ctx.beginPath(); ctx.ellipse(4, 0, 24, 15, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(22, 3, 14, 8, 0, 0, Math.PI * 2); ctx.fill(); // snout
+    // horns
+    ctx.strokeStyle = '#ffe8a3'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-6, -10); ctx.quadraticCurveTo(-20, -24, -32, -22); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-6, 10); ctx.quadraticCurveTo(-20, 24, -32, 22); ctx.stroke();
+    // glowing eye
+    ctx.fillStyle = '#fff3a0'; ctx.shadowColor = '#ffd43b'; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.ellipse(10, -6, 5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0; ctx.fillStyle = '#2b0a00';
+    ctx.beginPath(); ctx.ellipse(11, -6, 1.5, 3, 0, 0, Math.PI * 2); ctx.fill();
+    // whiskers
+    ctx.strokeStyle = 'rgba(255,230,160,.8)'; ctx.lineWidth = 1.5;
+    for (const sd of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(30, sd * 4);
+      ctx.quadraticCurveTo(40, sd * (14 + Math.sin(T * 6) * 4), 30, sd * 26); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawUniqueCelebration() {
+    const c = celebrate, T = c.t;
+    const fade = Math.min(1, (c.dur - T) / 0.5);
+    // warm dusk over the scene
+    ctx.fillStyle = `rgba(45,12,0,${0.55 * Math.min(1, T / 0.4) * fade})`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.globalAlpha = fade;
+    // amber glow ring in the sky the dragon circles
+    const cx = W / 2, cy = H * 0.33, R = Math.min(W, H) * 0.3, ga = Math.min(1, Math.max(0, (T - 0.8) / 0.6));
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.3);
+    glow.addColorStop(0, `rgba(255,190,80,${0.55 * ga})`); glow.addColorStop(0.6, `rgba(255,120,30,${0.25 * ga})`);
+    glow.addColorStop(1, 'rgba(255,90,0,0)');
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(cx, cy, R * 1.3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,200,120,${0.35 * ga})`; ctx.lineWidth = 2; ctx.setLineDash([6, 10]);
+    ctx.lineDashOffset = -T * 40;
+    ctx.beginPath(); ctx.ellipse(cx, cy, R, R * 0.55, 0, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    // particles (fire, embers, splash) glow additively
+    for (const q of particles) {
+      const life = Math.max(0, q.life / q.max);
+      ctx.globalCompositeOperation = q.add ? 'lighter' : 'source-over';
+      // fire puffs are softer so overlapping flames stay orange instead of washing out white
+      ctx.fillStyle = q.color + (life * fade * (q.grow ? 0.35 : 1)) + ')';
+      const r = q.size * (1 + (q.grow || 0) * (1 - life));
+      ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    drawDragon(T);
+    // banner: wavy fire letters
+    if (T > 1.2) {
+      const b = Math.min(1, (T - 1.2) / 0.4);
+      const fs = Math.min(W / 7, 70);
+      ctx.save(); ctx.translate(W / 2, H * 0.68);
+      ctx.scale(0.5 + 0.5 * b, 0.5 + 0.5 * b);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.font = `900 ${fs}px system-ui, sans-serif`;
+      const word = 'UNIQUE!', total = ctx.measureText(word).width;
+      let x = -total / 2;
+      for (let i = 0; i < word.length; i++) {
+        const ch = word[i], w = ctx.measureText(ch).width, y = Math.sin(T * 6 + i * 0.8) * fs * 0.08;
+        const tg = ctx.createLinearGradient(0, y - fs / 2, 0, y + fs / 2);
+        tg.addColorStop(0, '#fff1c1'); tg.addColorStop(0.45, '#ff9f1c'); tg.addColorStop(1, '#c2410c');
+        ctx.shadowColor = '#ff6a00'; ctx.shadowBlur = 18 + Math.sin(T * 20 + i) * 6;
+        ctx.lineWidth = 6; ctx.strokeStyle = '#3b0d00'; ctx.strokeText(ch, x, y);
+        ctx.fillStyle = tg; ctx.fillText(ch, x, y);
+        x += w;
+      }
+      ctx.shadowBlur = 0; ctx.textAlign = 'center';
+      ctx.font = `700 ${fs * 0.36}px system-ui, sans-serif`;
+      ctx.lineWidth = 4; ctx.strokeText(c.fish.name, 0, fs * 0.8);
+      ctx.fillStyle = '#ffe8c2'; ctx.fillText(c.fish.name, 0, fs * 0.8);
+      ctx.restore();
+    }
+    ctx.restore();
+    // orange burst at the moment of the catch
+    if (T < 0.4) { ctx.fillStyle = `rgba(255,150,40,${0.8 * (1 - T / 0.4)})`; ctx.fillRect(0, 0, W, H); }
+  }
+
   function drawCelebration() {
+    if (celebrate.kind === 'Unique') return drawUniqueCelebration();
     const c = celebrate, T = c.t;
     const fade = Math.min(1, (CELEBRATE_TIME - T) / 0.5);
     // darken the scene
@@ -344,18 +529,230 @@
     if (T < 0.35) { ctx.fillStyle = `rgba(255,255,255,${0.85 * (1 - T / 0.35)})`; ctx.fillRect(0, 0, W, H); }
   }
 
-  // ---------- Freeze power ----------
-  const FREEZE_TIME = 3;
-  function useFreeze() {
-    if (state !== 'reeling' || !reel || reel.freezeUsed || rod().power !== 'freeze') return;
-    reel.freezeUsed = true; reel.frozen = FREEZE_TIME; reel.fishV = 0;
-    $('freezeBtn').disabled = true;
-    msg('<b style="color:#9fe6ff">❄ Fish frozen!</b> Get your bar on it!');
-  }
-  $('freezeBtn').addEventListener('click', useFreeze);
-  window.addEventListener('keydown', e => { if (e.code === 'KeyF') useFreeze(); });
+  // ---------- Rod powers ----------
+  const FREEZE_TIME = 3, STUN_TIME = 1.2, PULL_TIME = 3.5, LIGHTNING_TIME = 1.3;
+  const POWERS = {
+    freeze: { label: '❄ Freeze', color: '#9fe6ff', desc: 'Freeze the fish for 3s', use() {
+      reel.frozen = FREEZE_TIME; reel.fishV = 0;
+      msg('<b style="color:#9fe6ff">❄ Fish frozen!</b> Get your bar on it!');
+    } },
+    lightning: { label: '⚡ Lightning', color: '#ffe066', desc: 'Strike the fish: +25% catch progress and stuns it', use() {
+      reel.progress = Math.min(1, reel.progress + 0.25); reel.stun = STUN_TIME; reel.fishV = 0;
+      ability = { kind: 'lightning', t: 0, dur: LIGHTNING_TIME, bolts: null, seed: 0 };
+      shakeScreen(0.5, 12);
+      const g = reelGeom(), fy = g.by + g.bh - reel.fish * g.bh;
+      burst(bobber.x, bobber.y + 8, 30, ['rgba(255,245,160,', 'rgba(140,220,255,'], 420);
+      burst(g.bx + g.bw / 2, fy, 24, ['rgba(255,245,160,', 'rgba(255,255,255,'], 300);
+      msg('<b style="color:#ffe066">⚡ ZAP!</b> +25% and the fish is stunned!');
+    } },
+    whirlpool: { label: '🌀 Whirlpool', color: '#7ff0e0', desc: 'Pull the fish into your bar for 3.5s', use() {
+      reel.pull = PULL_TIME; reel.fishV = 0;
+      ability = { kind: 'whirlpool', t: 0, dur: PULL_TIME };
+      msg('<b style="color:#7ff0e0">🌀 Whirlpool!</b> The fish is being pulled into your bar!');
+    } },
+  };
 
-  function reset(delay) { $('freezeBtn').hidden = true; state = 'result'; resultTimer = delay; reel = null; }
+  function usePower() {
+    const pw = POWERS[rod().power];
+    if (!pw || state !== 'reeling' || !reel || reel.powerUsed) return;
+    reel.powerUsed = true; $('powerBtn').disabled = true;
+    pw.use();
+  }
+  $('powerBtn').addEventListener('click', usePower);
+  window.addEventListener('keydown', e => { if (e.code === 'KeyF') usePower(); });
+
+  function burst(x, y, n, colors, speed) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, sp = speed * (0.3 + Math.random() * 0.7);
+      fxParticles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 500, life: 0.4 + Math.random() * 0.5,
+        max: 0.9, size: 1.5 + Math.random() * 2.5, color: colors[i % colors.length], streak: true });
+    }
+  }
+
+  // jagged lightning path between two points, with small forks
+  function makeBolt(x1, y1, x2, y2, rough) {
+    const pts = [[x1, y1]], steps = 12;
+    for (let i = 1; i < steps; i++) {
+      const k = i / steps;
+      pts.push([x1 + (x2 - x1) * k + (Math.random() - 0.5) * rough, y1 + (y2 - y1) * k + (Math.random() - 0.5) * rough * 0.3]);
+    }
+    pts.push([x2, y2]);
+    const forks = [];
+    for (let f = 0; f < 2; f++) {
+      const s = pts[3 + Math.floor(Math.random() * 6)], fp = [s];
+      let [x, y] = s;
+      for (let i = 0; i < 4; i++) { x += (Math.random() - 0.3) * rough * 0.8; y += rough * 0.4 * Math.random() + 8; fp.push([x, y]); }
+      forks.push(fp);
+    }
+    return { pts, forks };
+  }
+  function strokeBolt(b, alpha, width) {
+    const path = pts => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke(); };
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.strokeStyle = `rgba(140,210,255,${0.35 * alpha})`; ctx.lineWidth = width * 4; path(b.pts);
+    ctx.strokeStyle = `rgba(255,250,200,${0.9 * alpha})`; ctx.lineWidth = width * 1.6; path(b.pts);
+    ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = width * 0.6; path(b.pts);
+    ctx.strokeStyle = `rgba(200,235,255,${0.7 * alpha})`; ctx.lineWidth = width * 0.6;
+    b.forks.forEach(path);
+  }
+
+  function updateAbility(dt) {
+    for (const p of fxParticles) {
+      p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+      if (p.orbit) { p.a += p.spin * dt; p.r *= Math.pow(0.5, dt); p.x = p.cx + Math.cos(p.a) * p.r; p.y = p.cy + Math.sin(p.a) * p.r * 0.35; }
+    }
+    fxParticles = fxParticles.filter(p => p.life > 0);
+    if (!ability) return;
+    ability.t += dt;
+    // whirlpool winds down early if the reel ends
+    if (ability.kind === 'whirlpool' && !reel) ability.t = Math.max(ability.t, ability.dur - 0.4);
+    if (ability.kind === 'whirlpool' && ability.t < ability.dur - 0.4 && Math.random() < dt * 30) {
+      // droplets spiralling into the vortex
+      const a = Math.random() * Math.PI * 2;
+      fxParticles.push({ orbit: true, cx: bobber.x, cy: bobber.y + 10, a, r: 70 + Math.random() * 40, spin: 5,
+        x: 0, y: 0, vx: 0, vy: 0, g: 0, life: 1, max: 1, size: 1.5 + Math.random() * 2, color: 'rgba(210,255,250,' });
+    }
+    if (ability.t >= ability.dur) ability = null;
+  }
+
+  // effects in the water / sky (drawn under the reel UI)
+  function drawAbilityWorld() {
+    if (!ability) return;
+    const A = ability, T = A.t, bx = bobber.x, by = bobber.y + 10;
+    if (A.kind === 'lightning') {
+      // storm darkening the sky
+      const dark = T < 0.1 ? T / 0.1 : Math.max(0, 1 - (T - 0.1) / (A.dur - 0.1));
+      ctx.fillStyle = `rgba(20,20,50,${0.5 * dark})`; ctx.fillRect(0, 0, W, waterY());
+      ctx.fillStyle = `rgba(40,40,70,${0.85 * dark})`;
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath(); ctx.ellipse(bx - 120 + i * 60, 20 + (i % 2) * 14, 70, 30, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      // flickering main bolt from the clouds to the bobber
+      if (T < 0.55) {
+        if (!A.bolt || T - A.seed > 0.06) { A.bolt = makeBolt(bx + (Math.random() - 0.5) * 40, 20, bx, by, 60); A.seed = T; }
+        const flick = T < 0.2 ? 1 : (Math.random() < 0.6 ? 1 - T / 0.55 : 0.15);
+        strokeBolt(A.bolt, flick, 4);
+      }
+      // electric ring spreading on the water
+      if (T < 0.9) {
+        const k = T / 0.9;
+        ctx.strokeStyle = `rgba(180,230,255,${1 - k})`; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(bx, by, 20 + k * 120, (20 + k * 120) * 0.3, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = `rgba(255,245,160,${1 - k})`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.ellipse(bx, by, 10 + k * 80, (10 + k * 80) * 0.3, 0, 0, Math.PI * 2); ctx.stroke();
+      }
+    } else if (A.kind === 'whirlpool') {
+      const grow = Math.min(1, T / 0.4) * Math.min(1, (A.dur - T) / 0.4), R = 110 * grow;
+      ctx.save(); ctx.translate(bx, by); ctx.scale(1, 0.32);
+      // dark eye of the vortex
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+      g.addColorStop(0, 'rgba(2,30,45,.95)'); g.addColorStop(0.35, 'rgba(10,80,100,.7)'); g.addColorStop(1, 'rgba(40,160,180,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.fill();
+      // spinning spiral arms
+      for (let arm = 0; arm < 5; arm++) {
+        ctx.beginPath();
+        for (let r = 4; r <= R; r += 3) {
+          const a = arm * Math.PI * 2 / 5 + r * 0.06 - T * 7;
+          const x = Math.cos(a) * r, y = Math.sin(a) * r;
+          r === 4 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = arm % 2 ? 'rgba(220,255,250,.75)' : 'rgba(120,230,220,.6)';
+        ctx.lineWidth = 4; ctx.stroke();
+      }
+      // rotating foam rings
+      ctx.setLineDash([10, 14]);
+      for (let i = 1; i <= 3; i++) {
+        ctx.lineDashOffset = T * 60 * (i % 2 ? 1 : -1);
+        ctx.strokeStyle = `rgba(255,255,255,${0.5 - i * 0.1})`; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, R * (0.35 + i * 0.22), 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+
+  // effects drawn on the reel track
+  function drawAbilityReel(g, fy) {
+    const r = reel, cx = g.bx + g.bw / 2;
+    if (r.stun) {
+      // crackling arcs around the stunned fish
+      ctx.save(); ctx.beginPath(); ctx.rect(g.bx - 10, g.by, g.bw + 20, g.bh); ctx.clip();
+      for (let i = 0; i < 3; i++) {
+        const a = Math.random() * Math.PI * 2;
+        strokeBolt(makeBolt(cx, fy, cx + Math.cos(a) * 26, fy + Math.sin(a) * 20, 10), r.stun / STUN_TIME, 1.5);
+      }
+      ctx.restore();
+    }
+    if (ability && ability.kind === 'lightning' && ability.t < 0.4) {
+      // bolt down the track into the fish
+      strokeBolt(makeBolt(cx + (Math.random() - 0.5) * 10, g.by, cx, fy, 18), 1 - ability.t / 0.4, 3);
+    }
+    if (r.pull) {
+      const T = t, k = r.pull / PULL_TIME;
+      ctx.save(); ctx.beginPath(); ctx.rect(g.bx, g.by, g.bw, g.bh); ctx.clip();
+      ctx.fillStyle = 'rgba(60,200,190,.15)'; ctx.fillRect(g.bx, g.by, g.bw, g.bh);
+      // current flowing from the fish toward the bar's centre
+      const zy = g.by + g.bh - r.zone * g.bh;
+      ctx.strokeStyle = 'rgba(160,255,240,.85)'; ctx.lineWidth = 3; ctx.setLineDash([6, 8]);
+      ctx.lineDashOffset = (zy > fy ? -1 : 1) * T * 60;
+      for (const off of [-10, 10]) { ctx.beginPath(); ctx.moveTo(cx + off, fy); ctx.lineTo(cx + off, zy); ctx.stroke(); }
+      ctx.setLineDash([]);
+      // mini vortex spinning around the fish
+      for (let arm = 0; arm < 3; arm++) {
+        ctx.beginPath();
+        for (let rr = 3; rr <= 22; rr += 1.5) {
+          const a = arm * Math.PI * 2 / 3 + rr * 0.25 - T * 10;
+          const x = cx + Math.cos(a) * rr, y = fy + Math.sin(a) * rr;
+          rr === 3 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = 'rgba(200,255,250,.8)'; ctx.lineWidth = 2; ctx.stroke();
+      }
+      // bubbles rising up the track
+      ctx.fillStyle = 'rgba(220,255,252,.7)';
+      for (let i = 0; i < 7; i++) {
+        const y = g.by + g.bh - ((T * 80 + i * 53) % g.bh), x = g.bx + 6 + (i * 17) % (g.bw - 12);
+        ctx.beginPath(); ctx.arc(x + Math.sin(T * 4 + i) * 3, y, 2 + (i % 3), 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+      ctx.fillStyle = '#7ff0e0'; ctx.fillRect(g.bx, g.by - 6, g.bw * k, 3);
+    }
+  }
+
+  // full-screen overlays, sparks and floating text
+  function drawAbilityOverlay() {
+    for (const p of fxParticles) {
+      const a = Math.max(0, p.life / p.max);
+      ctx.globalCompositeOperation = 'lighter';
+      if (p.streak) {
+        ctx.strokeStyle = p.color + a + ')'; ctx.lineWidth = p.size;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03); ctx.stroke();
+      } else {
+        ctx.fillStyle = p.color + a + ')';
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    if (!ability) return;
+    const T = ability.t;
+    if (ability.kind === 'lightning') {
+      if (T < 0.25) { ctx.fillStyle = `rgba(255,255,240,${0.75 * (1 - T / 0.25)})`; ctx.fillRect(0, 0, W, H); }
+      // "+25%" rising next to the progress meter
+      const g = reelGeom(), a = Math.max(0, 1 - T / ability.dur);
+      ctx.font = '900 22px system-ui, sans-serif'; ctx.textAlign = 'right';
+      ctx.lineWidth = 4; ctx.strokeStyle = `rgba(60,40,0,${a})`; ctx.fillStyle = `rgba(255,230,90,${a})`;
+      const y = g.by + g.bh * 0.3 - T * 50;
+      ctx.strokeText('+25%', g.bx - 14, y); ctx.fillText('+25%', g.bx - 14, y);
+    } else if (ability.kind === 'whirlpool' && T < 0.3) {
+      ctx.fillStyle = `rgba(120,240,225,${0.35 * (1 - T / 0.3)})`; ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  function reelGeom() {
+    const bw = 44, bh = Math.min(H * 0.55, 360);
+    return { bw, bh, bx: W - bw - 40, by: (H - bh) / 2 };
+  }
+
+  function reset(delay) { $('powerBtn').hidden = true; state = 'result'; resultTimer = delay; reel = null; }
 
   // ---------- Update ----------
   function update(dt) {
@@ -379,13 +776,19 @@
       const r = reel, d = hooked.diff;
       // fish darts around; harder fish move more often and further
       if (r.frozen > 0) r.frozen = Math.max(0, r.frozen - dt);
-      else r.retarget -= dt;
-      if (r.retarget <= 0 && !r.frozen) {
+      if (r.stun > 0) r.stun = Math.max(0, r.stun - dt);
+      if (r.pull > 0) r.pull = Math.max(0, r.pull - dt);
+      const held = r.frozen || r.stun || r.pull;
+      if (!held) r.retarget -= dt;
+      if (r.retarget <= 0 && !held) {
         r.retarget = 0.35 + Math.random() * (1.4 - d);
         const jump = (Math.random() - 0.5) * (0.4 + d);
         r.fishTarget = Math.max(0.03, Math.min(0.97, r.fish + jump));
       }
-      if (!r.frozen) {
+      if (r.pull) {
+        // whirlpool drags the fish toward the middle of the player's bar
+        r.fish += (r.zone - r.fish) * Math.min(1, 2.5 * dt); r.fishTarget = r.fish;
+      } else if (!held) {
         r.fishV += (r.fishTarget - r.fish) * (6 + d * 10) * dt;
         r.fishV *= Math.pow(0.02, dt);
         r.fish = Math.max(0, Math.min(1, r.fish + r.fishV * dt * 4));
@@ -413,8 +816,8 @@
     const wy = waterY();
     // screen shake for the first moments of a legendary catch
     ctx.save();
-    if (celebrate && celebrate.t < 0.8) {
-      const m = 10 * (1 - celebrate.t / 0.8);
+    if (shake.t > 0) {
+      const m = shake.mag * shake.t / shake.dur;
       ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
     }
     // sky
@@ -482,15 +885,16 @@
       ctx.fillStyle = `hsl(${120 * charge}, 80%, 55%)`; ctx.fillRect(mx, my, mw * charge, 14);
       ctx.strokeStyle = '#fff'; ctx.strokeRect(mx, my, mw, 14);
     }
+    drawAbilityWorld();
     if (state === 'reeling') drawReel();
     ctx.restore();
+    drawAbilityOverlay();
     if (celebrate) drawCelebration();
   }
 
   function drawReel() {
     const r = reel;
-    const bw = 44, bh = Math.min(H * 0.55, 360);
-    const bx = W - bw - 40, by = (H - bh) / 2;
+    const geom = reelGeom(), { bw, bh, bx, by } = geom;
     // track
     ctx.fillStyle = 'rgba(10,20,35,.85)';
     roundRect(bx - 8, by - 8, bw + 16 + 22, bh + 16, 12); ctx.fill();
@@ -501,10 +905,12 @@
     ctx.fillRect(bx, zy, bw, zh);
     // fish
     const fy = by + bh - r.fish * bh;
-    ctx.fillStyle = r.frozen ? '#bfefff' : RARITIES[hooked.rarity].color;
-    ctx.beginPath(); ctx.ellipse(bx + bw / 2, fy, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(bx + bw / 2 + 12, fy); ctx.lineTo(bx + bw / 2 + 20, fy - 7);
-    ctx.lineTo(bx + bw / 2 + 20, fy + 7); ctx.fill();
+    const jx = r.stun ? (Math.random() - 0.5) * 6 : 0; // stunned fish twitches
+    ctx.fillStyle = r.frozen ? '#bfefff' : r.stun ? '#fff6a8' : RARITIES[hooked.rarity].color;
+    ctx.beginPath(); ctx.ellipse(bx + bw / 2 + jx, fy, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx + bw / 2 + 12 + jx, fy); ctx.lineTo(bx + bw / 2 + 20 + jx, fy - 7);
+    ctx.lineTo(bx + bw / 2 + 20 + jx, fy + 7); ctx.fill();
+    drawAbilityReel(geom, fy);
     if (r.frozen) {
       // ice block around the fish + frost on the track
       ctx.fillStyle = 'rgba(150,225,255,.18)'; ctx.fillRect(bx, by, bw, bh);
@@ -542,7 +948,7 @@
       const dis = equipped || (!owned && save.coins < r.cost);
       return `<div class="row"><div><b>${r.name}</b>
         <small>Bar ${Math.round(r.bar * 100)}% · Luck x${r.luck} · Speed x${r.speed}</small>
-        ${r.power === 'freeze' ? '<small style="color:#9fe6ff">❄ Power: Freeze the fish for 3s (once per catch)</small>' : ''}</div>
+        ${r.power ? `<small style="color:${POWERS[r.power].color}">${POWERS[r.power].label} power: ${POWERS[r.power].desc} (once per catch)</small>` : ''}</div>
         <button data-rod="${i}" ${dis ? 'disabled' : ''}>${label}</button></div>`;
     }).join('');
   }
@@ -571,7 +977,8 @@
   let last = performance.now();
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
-    update(dt); updateCelebration(dt); draw();
+    if (shake.t > 0) shake.t = Math.max(0, shake.t - dt);
+    update(dt); updateCelebration(dt); updateAbility(dt); draw();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
