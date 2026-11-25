@@ -70,11 +70,13 @@
 (() => {
   // ---------- Data ----------
   const RARITIES = {
-    Common:    { color: '#cfd8e3', weight: 60 },
-    Uncommon:  { color: '#6be38a', weight: 25 },
-    Rare:      { color: '#5aa9ff', weight: 10 },
-    Epic:      { color: '#c07bff', weight: 4 },
-    Legendary: { color: '#ffcc4d', weight: 1 },
+    // tier: how much rod luck boosts this rarity (higher = boosted more)
+    Common:    { color: '#cfd8e3', weight: 60, tier: 0 },
+    Uncommon:  { color: '#6be38a', weight: 25, tier: 1 },
+    Rare:      { color: '#5aa9ff', weight: 10, tier: 2 },
+    Epic:      { color: '#c07bff', weight: 4,  tier: 3 },
+    Unique:    { color: '#ff9f1c', weight: 2,  tier: 3.5 },
+    Legendary: { color: '#ffcc4d', weight: 1,  tier: 4 },
   };
   // difficulty: how jumpy the fish is in the reel minigame (0..1)
   const FISH = [
@@ -87,6 +89,7 @@
     { name: 'Coral Snapper',  rarity: 'Rare',      price: 75,  diff: 0.6 },
     { name: 'Aurora Eel',     rarity: 'Epic',      price: 180, diff: 0.75 },
     { name: 'Sakura Koi',     rarity: 'Epic',      price: 220, diff: 0.8 },
+    { name: 'Amber Dragon',   rarity: 'Unique',    price: 200, diff: 0.14 },
     { name: 'Roslit Leviathan', rarity: 'Legendary', price: 750, diff: 0.95 },
   ];
   const RODS = [
@@ -145,7 +148,7 @@
   function pickFish() {
     const luck = rod().luck;
     // luck boosts rarer tiers
-    const tiers = Object.entries(RARITIES).map(([k, v], i) => [k, v.weight * Math.pow(luck, i)]);
+    const tiers = Object.entries(RARITIES).map(([k, v]) => [k, v.weight * Math.pow(luck, v.tier)]);
     let total = tiers.reduce((a, [, w]) => a + w, 0), r = Math.random() * total;
     let rarity = tiers[0][0];
     for (const [k, w] of tiers) { if ((r -= w) <= 0) { rarity = k; break; } }
