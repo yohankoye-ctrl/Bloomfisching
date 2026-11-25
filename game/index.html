@@ -19,7 +19,7 @@
     justify-content: space-between; pointer-events: none; }
   .pill { background: var(--ui-bg); padding: 8px 12px; border-radius: 999px; font-weight: 600;
     font-size: 14px; pointer-events: auto; }
-  .btns { display: flex; gap: 8px; }
+  .btns { display: flex; gap: 8px; pointer-events: auto; }
   button { font: inherit; color: var(--ui-fg); background: var(--ui-bg); border: 1px solid rgba(255,255,255,.15);
     border-radius: 999px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 14px; }
   button:hover { border-color: var(--accent); }
@@ -37,6 +37,11 @@
     padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 14px; }
   .row small { opacity: .7; display: block; }
   .close { margin-top: 12px; width: 100%; }
+  #freezeBtn { position: fixed; right: max(16px, env(safe-area-inset-right, 0px));
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px)); padding: 14px 20px; font-size: 16px;
+    background: linear-gradient(#bfefff, #4fb3e8); color: #062a44; border: 2px solid #e8fbff;
+    box-shadow: 0 0 16px rgba(120, 220, 255, .7); }
+  #freezeBtn:disabled { box-shadow: none; }
 </style>
 </head>
 <body>
@@ -49,6 +54,7 @@
     <button id="bookBtn">Journal</button>
   </div>
 </div>
+<button id="freezeBtn" hidden>❄ Freeze</button>
 <div id="msg">Hold to charge your cast, release to throw.</div>
 
 <div class="panel" id="shop"><div class="card">
@@ -88,12 +94,17 @@
     { name: 'Bamboo Rod',  cost: 150,  bar: 0.27, luck: 1.3, speed: 1.15 },
     { name: 'Petal Rod',   cost: 600,  bar: 0.32, luck: 1.8, speed: 1.3 },
     { name: 'Aurora Rod',  cost: 2000, bar: 0.38, luck: 2.6, speed: 1.5 },
+    // Special rod: big rare-fish luck plus the Freeze power while reeling
+    { name: 'Frostbloom Rod', cost: 0, bar: 0.36, luck: 4, speed: 1.4, power: 'freeze' },
   ];
 
   // ---------- Save ----------
   const SAVE_KEY = 'bloomfisching-save-v1';
   let save = { coins: 0, rod: 0, owned: [0], caught: {} };
   try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s) save = { ...save, ...s }; } catch {}
+  // Frostbloom Rod is a gift: owned by everyone, and equipped once the first time
+  if (!save.owned.includes(4)) save.owned.push(4);
+  if (!save.frostGift) { save.frostGift = true; save.rod = 4; }
   const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch {} };
 
   // ---------- Canvas ----------
@@ -185,8 +196,9 @@
   function startReel() {
     state = 'reeling';
     reel = { fish: 0.5, fishV: 0, fishTarget: 0.5, zone: 0.5, zoneV: 0,
-             size: rod().bar, progress: 0.3, retarget: 0 };
+             size: rod().bar, progress: 0.3, retarget: 0, frozen: 0, freezeUsed: false };
     msg('Hold to lift the bar, keep the fish inside it!');
+    if (rod().power === 'freeze') { $('freezeBtn').hidden = false; $('freezeBtn').disabled = false; }
   }
 
   function finishReel(success) {
@@ -329,7 +341,18 @@
     if (T < 0.35) { ctx.fillStyle = `rgba(255,255,255,${0.85 * (1 - T / 0.35)})`; ctx.fillRect(0, 0, W, H); }
   }
 
-  function reset(delay) { state = 'result'; resultTimer = delay; reel = null; }
+  // ---------- Freeze power ----------
+  const FREEZE_TIME = 3;
+  function useFreeze() {
+    if (state !== 'reeling' || !reel || reel.freezeUsed || rod().power !== 'freeze') return;
+    reel.freezeUsed = true; reel.frozen = FREEZE_TIME; reel.fishV = 0;
+    $('freezeBtn').disabled = true;
+    msg('<b style="color:#9fe6ff">❄ Fish frozen!</b> Get your bar on it!');
+  }
+  $('freezeBtn').addEventListener('click', useFreeze);
+  window.addEventListener('keydown', e => { if (e.code === 'KeyF') useFreeze(); });
+
+  function reset(delay) { $('freezeBtn').hidden = true; state = 'result'; resultTimer = delay; reel = null; }
 
   // ---------- Update ----------
   function update(dt) {
@@ -352,15 +375,18 @@
     } else if (state === 'reeling') {
       const r = reel, d = hooked.diff;
       // fish darts around; harder fish move more often and further
-      r.retarget -= dt;
-      if (r.retarget <= 0) {
+      if (r.frozen > 0) r.frozen = Math.max(0, r.frozen - dt);
+      else r.retarget -= dt;
+      if (r.retarget <= 0 && !r.frozen) {
         r.retarget = 0.35 + Math.random() * (1.4 - d);
         const jump = (Math.random() - 0.5) * (0.4 + d);
         r.fishTarget = Math.max(0.03, Math.min(0.97, r.fish + jump));
       }
-      r.fishV += (r.fishTarget - r.fish) * (6 + d * 10) * dt;
-      r.fishV *= Math.pow(0.02, dt);
-      r.fish = Math.max(0, Math.min(1, r.fish + r.fishV * dt * 4));
+      if (!r.frozen) {
+        r.fishV += (r.fishTarget - r.fish) * (6 + d * 10) * dt;
+        r.fishV *= Math.pow(0.02, dt);
+        r.fish = Math.max(0, Math.min(1, r.fish + r.fishV * dt * 4));
+      } else r.fishTarget = r.fish;
       // player bar: gravity vs lift
       r.zoneV += (pressing ? 2.6 : -2.2) * dt;
       r.zoneV *= Math.pow(0.3, dt);
@@ -472,10 +498,26 @@
     ctx.fillRect(bx, zy, bw, zh);
     // fish
     const fy = by + bh - r.fish * bh;
-    ctx.fillStyle = RARITIES[hooked.rarity].color;
+    ctx.fillStyle = r.frozen ? '#bfefff' : RARITIES[hooked.rarity].color;
     ctx.beginPath(); ctx.ellipse(bx + bw / 2, fy, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.moveTo(bx + bw / 2 + 12, fy); ctx.lineTo(bx + bw / 2 + 20, fy - 7);
     ctx.lineTo(bx + bw / 2 + 20, fy + 7); ctx.fill();
+    if (r.frozen) {
+      // ice block around the fish + frost on the track
+      ctx.fillStyle = 'rgba(150,225,255,.18)'; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = 'rgba(200,245,255,.45)'; ctx.strokeStyle = '#e8fbff'; ctx.lineWidth = 2;
+      roundRect(bx + 2, fy - 13, bw - 4, 26, 5); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(bx + 8, fy - 9); ctx.lineTo(bx + 15, fy - 2); ctx.stroke();
+      // snowflakes drifting down the track
+      ctx.fillStyle = '#fff';
+      for (let i = 0; i < 6; i++) {
+        const sy = by + ((t * 60 + i * 61) % bh), sx = bx + 6 + (i * 13) % (bw - 12);
+        ctx.beginPath(); ctx.arc(sx, sy, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      // time left
+      ctx.fillStyle = '#9fe6ff'; ctx.fillRect(bx, by - 6, bw * (r.frozen / FREEZE_TIME), 3);
+    }
     // progress
     const px = bx + bw + 6;
     ctx.fillStyle = '#0b1a2a'; ctx.fillRect(px, by, 10, bh);
@@ -496,7 +538,8 @@
       const label = equipped ? 'Equipped' : owned ? 'Equip' : `Buy ${r.cost} 🪙`;
       const dis = equipped || (!owned && save.coins < r.cost);
       return `<div class="row"><div><b>${r.name}</b>
-        <small>Bar ${Math.round(r.bar * 100)}% · Luck x${r.luck} · Speed x${r.speed}</small></div>
+        <small>Bar ${Math.round(r.bar * 100)}% · Luck x${r.luck} · Speed x${r.speed}</small>
+        ${r.power === 'freeze' ? '<small style="color:#9fe6ff">❄ Power: Freeze the fish for 3s (once per catch)</small>' : ''}</div>
         <button data-rod="${i}" ${dis ? 'disabled' : ''}>${label}</button></div>`;
     }).join('');
   }
